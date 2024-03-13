@@ -1,0 +1,18 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Debug",
+            "type": "lldb",
+            "request": "launch",
+            "program": "${workspaceFolder}/zig-out/bin/zig-hw",
+            // "program": "${workspaceFolder}/zig-cache/o/1224b7ee8d2a926e00a8608c4e8f3f27/test",
+            "args": [],
+            "cwd": "${workspaceFolder}",
+            "preLaunchTask": "zig build",
+        }
+    ]
+}
