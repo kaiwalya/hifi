@@ -2,13 +2,11 @@ const std = @import("std");
 
 const proc = @import("./processor.zig");
 
-pub const MergeAndSplit = struct {
+const MergeAndSplit = struct {
     allocator: std.mem.Allocator,
 
-    pub fn init(allocator: std.mem.Allocator) @This() {
-        return @This(){
-            .allocator = allocator,
-        };
+    pub fn init(this: *@This(), allocator: std.mem.Allocator) void {
+        this.allocator = allocator;
     }
 
     pub fn deinit(_: @This()) void {}
@@ -43,19 +41,37 @@ pub const MergeAndSplit = struct {
             }
         }
     }
+};
 
-    const vtable = proc.Processor.VTable{
-        .writeSpec = writeSpec,
-        .process = process,
-        .leadFrames = null,
+const ProcessorImpl = MergeAndSplit;
+
+const VTable = proc.Processor.VTable{
+    .writeSpec = ProcessorImpl.writeSpec,
+    .process = ProcessorImpl.process,
+    .leadFrames = null,
+};
+
+fn new(_: ?*anyopaque, allocator: std.mem.Allocator) proc.Error!proc.Processor {
+    const inner = try allocator.create(ProcessorImpl);
+    inner.init(allocator);
+
+    return proc.Processor{
+        ._this = inner,
+        ._funcs = &VTable,
     };
+}
 
-    pub fn asProcessor(self: *@This()) proc.Processor {
-        return proc.Processor{
-            ._this = self,
-            ._funcs = &vtable,
-        };
-    }
+fn del(_: ?*anyopaque, p: proc.Processor) void {
+    const inner: *ProcessorImpl = @ptrCast(@alignCast(p._this));
+    const allocator = inner.allocator;
+    inner.deinit();
+    allocator.destroy(inner);
+}
+
+pub const Factory = proc.ProcessorFactory{
+    ._this = null,
+    ._new = new,
+    ._del = del,
 };
 
 test "merge passes the right id" {

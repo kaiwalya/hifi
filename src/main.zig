@@ -1,4 +1,34 @@
 const std = @import("std");
+pub const std_options = struct {
+    pub const log_level = std.log.Level.info;
+    pub const logFn = myLogFn;
+};
+
+pub fn myLogFn(
+    comptime level: std.log.Level,
+    comptime scope: @TypeOf(.EnumLiteral),
+    comptime format: []const u8,
+    args: anytype,
+) void {
+    // Ignore all non-error logging from sources other than
+    // .my_project, .nice_library and the default
+    const scope_prefix = "(" ++ switch (scope) {
+        .my_project, .nice_library, std.log.default_log_scope => @tagName(scope),
+        else => if (@intFromEnum(level) <= @intFromEnum(std.log.Level.err))
+            @tagName(scope)
+        else
+            return,
+    } ++ "): ";
+
+    const prefix = "[" ++ comptime level.asText() ++ "] " ++ scope_prefix;
+
+    // Print the message to stderr, silently ignoring any errors
+    std.debug.getStderrMutex().lock();
+    defer std.debug.getStderrMutex().unlock();
+    const stderr = std.io.getStdErr().writer();
+    nosuspend stderr.print(prefix ++ format ++ "\n", args) catch return;
+}
+
 const grid = @import("./grid.zig");
 const zmq = @cImport({
     @cInclude("zmq.h");
@@ -15,7 +45,7 @@ const fftw = @cImport({
 
 const proc = @import("processor/processor.zig");
 const mergeAndSplit = @import("processor/mergeAndSplit.zig");
-const output = @import("processor/io.zig");
+const output = @import("processor/output.zig");
 const sweep = @import("processor/sweep.zig");
 
 //transpose
@@ -507,6 +537,35 @@ pub fn read_callback(stream: [*c]soundio.SoundIoInStream, frame_count_min: c_int
     }
 }
 
+pub fn init_soundio() !struct {
+    s: [*c]soundio.SoundIo,
+    deinit: *const fn ([*c]soundio.SoundIo) void,
+} {
+    const s = soundio.soundio_create();
+    if (s == null) {
+        return error.@"out of memory";
+    }
+    // defer soundio.soundio_destroy(s);
+
+    const conn_code = soundio.soundio_connect(s);
+    if (conn_code != 0) {
+        return error.@"soundio_connect failed";
+    }
+    // defer soundio.soundio_disconnect(s);
+
+    soundio.soundio_flush_events(s);
+
+    return .{
+        .s = s,
+        .deinit = struct {
+            fn deinit(sio: [*c]soundio.SoundIo) void {
+                soundio.soundio_disconnect(sio);
+                soundio.soundio_destroy(sio);
+            }
+        }.deinit,
+    };
+}
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     var allocator = gpa.allocator();
@@ -520,22 +579,9 @@ pub fn main() !void {
     // const context = zmq.zmq_ctx_new();
     // std.log.info("context: {any}", .{context});
 
-    const s = soundio.soundio_create();
-    if (s == null) {
-        std.log.warn("out of memory", .{});
-        return;
-    }
-    defer soundio.soundio_destroy(s);
-
-    const conn_code = soundio.soundio_connect(s);
-    if (conn_code != 0) {
-        std.log.warn("soundio_connect failed: {d}", .{conn_code});
-        return;
-    }
-    defer soundio.soundio_disconnect(s);
-    std.log.info("Connected via {s}", .{soundio.soundio_backend_name(s.*.current_backend)});
-
-    soundio.soundio_flush_events(s);
+    const sio = try init_soundio();
+    const s = sio.s;
+    defer sio.deinit(s);
 
     //default input device
     const default_input_device_idx = soundio.soundio_default_input_device_index(s);
@@ -581,27 +627,15 @@ pub fn main() !void {
     };
     input_stream.*.userdata = @ptrCast(&stream_data);
 
-    var mutex = std.Thread.Mutex{};
+    var o_proc = try output.Factory.new(allocator);
+    defer output.Factory.del(o_proc);
 
-    var o = try output.Output.init(.{
-        .allocator = allocator,
-        .sampling_rate = 44100,
-        .soundio = s,
-        .mutex = &mutex,
-    });
+    var swp_proc = try sweep.Factory.new(allocator);
+    defer sweep.Factory.del(swp_proc);
 
-    _ = try o.serialize();
+    var split_proc = try mergeAndSplit.Factory.new(allocator);
+    defer mergeAndSplit.Factory.del(split_proc);
 
-    defer o.deinit();
-
-    var swp = sweep.Sweep
-        .init(.{ .allocator = allocator, .time = 3.0, .min_f = 20, .max_f = 20000, .accl_f = 0.8 });
-    defer swp.deinit();
-
-    var split = mergeAndSplit.MergeAndSplit.init(allocator);
-    defer split.deinit();
-
-    try o.start();
     const out_head = try proc.IOHead.init(allocator, 2, 0);
     const split_head = try proc.IOHead.init(allocator, 1, 2);
     const swp_head = try proc.IOHead.init(allocator, 1, 1);
@@ -611,7 +645,6 @@ pub fn main() !void {
     var frames_idx = std.simd.iota(f32, proc.SignalSliceLength);
     var frames_idx_increment: proc.SignalSlice = @splat(proc.SignalSliceLength);
     const t_per_frame: proc.SignalSlice = @splat(1.0 / @as(f32, @floatFromInt(sampling_rate)));
-    const lead_frames_target = sampling_rate / 100;
 
     var slices = [_]proc.SignalSlice{ @splat(0.0), @splat(0.0), @splat(0.0) };
 
@@ -625,13 +658,15 @@ pub fn main() !void {
     out_head.inputs.port_signals[0] = &slices[0];
     out_head.inputs.port_signals[1] = &slices[2];
 
-    var procs = [_]proc.Processor{ swp.asProcessor(), split.asProcessor(), o.asProcessor() };
+    var procs = [_]proc.Processor{ swp_proc, split_proc, o_proc };
     var heads = [_]proc.IOHead{ swp_head, split_head, out_head };
     var lead_frames: usize = procs[procs.len - 1].leadFrames();
+    var lead_frames_target: usize = 1;
 
     while (true) {
-        defer lead_frames = procs[procs.len - 1].leadFrames();
-        if (lead_frames < lead_frames_target) {
+        const generate = lead_frames < lead_frames_target;
+
+        if (generate) {
             slices[0] = frames_idx * t_per_frame;
             for (0..procs.len) |i| {
                 try procs[i].process(heads[i]);
@@ -640,10 +675,13 @@ pub fn main() !void {
         } else {
             const lead_frames_extra = lead_frames - lead_frames_target;
             const seconds_extra = @as(f32, @floatFromInt(lead_frames_extra)) / @as(f32, @floatFromInt(sampling_rate));
-            // std.log.info("sleeping for {d:.4}sec {d}", .{ seconds_extra, lead_frames });
             std.time.sleep(@intFromFloat(@round(seconds_extra * std.time.ns_per_s)));
-            // defer std.log.info("slept for {d:.4}sec {d}", .{ seconds_extra, lead_frames });
-            // lead_frames = o.leadFrames();
+        }
+
+        lead_frames = procs[procs.len - 1].leadFrames();
+        if (lead_frames == 0) {
+            lead_frames_target *= 2;
+            std.log.info("lead_frames_target: {d}", .{lead_frames_target});
         }
     }
 }

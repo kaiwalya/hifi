@@ -7,6 +7,10 @@ pub const IODataType = enum {
     control,
 };
 
+pub const Error = error{
+    OutOfMemory,
+};
+
 pub const InputPortSpec = struct { type: IODataType };
 
 pub const OutputPortSpec = struct { type: IODataType };
@@ -36,7 +40,6 @@ pub const Processor = struct {
         writeSpec: *const fn (this: *const anyopaque, spec: *ConnectionSpec) void,
         process: *const fn (this: *anyopaque, head: IOHead) anyerror!void,
         leadFrames: ?*const fn (this: *anyopaque) usize,
-        // deinit: *const fn (this: *anyopaque) void,
     };
 
     _this: *anyopaque,
@@ -58,6 +61,20 @@ pub const Processor = struct {
             return 0;
         }
         return leadFrames_fn.?(this._this);
+    }
+};
+
+pub const ProcessorFactory = struct {
+    _this: ?*anyopaque,
+    _new: *const fn (this: ?*anyopaque, allocator: std.mem.Allocator) Error!Processor,
+    _del: *const fn (this: ?*anyopaque, processor: Processor) void,
+
+    pub fn new(this: *const @This(), allocator: std.mem.Allocator) Error!Processor {
+        return this._new(this._this, allocator);
+    }
+
+    pub fn del(this: *const @This(), processor: Processor) void {
+        this._del(this._this, processor);
     }
 };
 
@@ -84,7 +101,7 @@ pub const IOHead = struct {
         port_signals: []*SignalSlice,
     },
 
-    pub fn init(allocator: std.mem.Allocator, ins: usize, outs: usize) std.mem.Allocator.Error!@This() {
+    pub fn init(allocator: std.mem.Allocator, ins: usize, outs: usize) Error!@This() {
         var ints = try allocator.alloc(usize, ins + outs);
         var slices = try allocator.alloc(*SignalSlice, ins + outs);
 

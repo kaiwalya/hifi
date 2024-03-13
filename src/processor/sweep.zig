@@ -2,31 +2,30 @@ const std = @import("std");
 
 const proc = @import("./processor.zig");
 const two_pi: proc.SignalSlice = @splat(2.0 * std.math.pi);
-pub const SweepInit = struct {
+
+const SweepInit = struct {
     allocator: std.mem.Allocator,
     time: f32,
     min_f: f32,
     max_f: f32,
 
-    //1.0, linear gradiant, 0.1, initially fast, 10, initially slow
-    accl_f: f32,
+    // //1.0, linear gradiant, 0.1, initially fast, 10, initially slow
+    // accl_f: f32,
 };
 
-pub const Sweep = struct {
+const Sweep = struct {
     opt: SweepInit,
     min_f: proc.SignalSlice,
     max_f: proc.SignalSlice,
     max_time: proc.SignalSlice,
     c_half: proc.SignalSlice,
 
-    pub fn init(sweep_opt: SweepInit) @This() {
-        return Sweep{
-            .opt = sweep_opt,
-            .min_f = @splat(sweep_opt.min_f),
-            .max_f = @splat(sweep_opt.max_f),
-            .max_time = @splat(sweep_opt.time),
-            .c_half = @splat(0.5),
-        };
+    pub fn init(this: *@This(), sweep_opt: SweepInit) void {
+        this.opt = sweep_opt;
+        this.min_f = @splat(sweep_opt.min_f);
+        this.max_f = @splat(sweep_opt.max_f);
+        this.max_time = @splat(sweep_opt.time);
+        this.c_half = @splat(0.5);
     }
 
     pub fn deinit(_: @This()) void {}
@@ -54,18 +53,40 @@ pub const Sweep = struct {
         // const ng_v = min_freq + std.math.pow(f32, tt / max_time, slow_down) * (max_freq - min_freq); //rotations per second
         out.* = @sin(ng_disp_radians);
     }
+};
 
-    const vtable = proc.Processor.VTable{
-        .writeSpec = writeSpec,
-        .process = process,
-        .leadFrames = null,
-        // .deinit = @This().deinit,
+const ProcessorImpl = Sweep;
+
+const VTable = proc.Processor.VTable{
+    .writeSpec = ProcessorImpl.writeSpec,
+    .process = ProcessorImpl.process,
+    .leadFrames = null,
+};
+
+fn new(_: ?*anyopaque, allocator: std.mem.Allocator) proc.Error!proc.Processor {
+    const inner = try allocator.create(ProcessorImpl);
+    inner.init(SweepInit{
+        .allocator = allocator,
+        .time = 3.0,
+        .min_f = 20.0,
+        .max_f = 20000.0,
+    });
+
+    return proc.Processor{
+        ._this = inner,
+        ._funcs = &VTable,
     };
+}
 
-    pub fn asProcessor(this: *@This()) proc.Processor {
-        return proc.Processor{
-            ._this = this,
-            ._funcs = &vtable,
-        };
-    }
+fn del(_: ?*anyopaque, p: proc.Processor) void {
+    const inner: *ProcessorImpl = @ptrCast(@alignCast(p._this));
+    const allocator = inner.opt.allocator;
+    inner.deinit();
+    allocator.destroy(inner);
+}
+
+pub const Factory = proc.ProcessorFactory{
+    ._this = null,
+    ._new = new,
+    ._del = del,
 };

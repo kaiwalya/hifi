@@ -7,14 +7,14 @@ const soundio = @cImport({
 var rand = std.rand.DefaultPrng.init(0);
 pub const OutputInit = struct {
     allocator: std.mem.Allocator,
-    soundio: *soundio.SoundIo,
     sampling_rate: usize,
     mutex: *std.Thread.Mutex,
 };
+
 pub const Output = struct {
     allocator: std.mem.Allocator,
-    soundio: *soundio.SoundIo,
     mutex: *std.Thread.Mutex,
+    soundio: [*c]soundio.SoundIo,
     device: [*c]soundio.SoundIoDevice,
     stream: [*c]soundio.SoundIoOutStream,
 
@@ -31,19 +31,30 @@ pub const Output = struct {
         return try str.toOwnedSlice();
     }
 
-    pub fn init(init_data: OutputInit) !@This() {
+    pub fn init(this: *@This(), init_data: OutputInit) !void {
         var allocator = init_data.allocator;
-        var sio = init_data.soundio;
         const buffer_size = init_data.sampling_rate * @sizeOf(f32) * 2;
-        var this = @This(){
-            .allocator = allocator,
-            .soundio = sio,
-            .device = null,
-            .stream = null,
-            .buffer = try std.RingBuffer.init(allocator, buffer_size),
-            .mutex = init_data.mutex,
-        };
+
+        this.allocator = allocator;
+        // this.soundio = sio;
+        this.mutex = init_data.mutex;
+        this.device = null;
+        this.stream = null;
+        this.buffer = try std.RingBuffer.init(allocator, buffer_size);
+
         errdefer this.deinit();
+
+        this.soundio = soundio.soundio_create();
+        if (this.soundio == null) {
+            return error.OutOfMemory;
+        }
+
+        const conn_code = soundio.soundio_connect(this.soundio);
+        if (conn_code != 0) {
+            return error.OutOfMemory;
+        }
+
+        soundio.soundio_flush_events(this.soundio);
 
         const default_out_idx = soundio.soundio_default_output_device_index(this.soundio);
         if (default_out_idx < 0) {
@@ -99,11 +110,6 @@ pub const Output = struct {
         };
 
         out_stream.*.write_callback = writeCallback_static;
-
-        return this;
-    }
-
-    pub fn start(this: *@This()) error{OutOfMemory}!void {
         this.stream.*.userdata = this;
 
         if (soundio.soundio_outstream_open(this.stream) != soundio.SoundIoErrorNone) {
@@ -124,6 +130,11 @@ pub const Output = struct {
         if (this.device != null) {
             soundio.soundio_device_unref(this.device);
         }
+
+        if (this.soundio != null) {
+            soundio.soundio_disconnect(this.soundio);
+            soundio.soundio_destroy(this.soundio);
+        }
     }
 
     pub fn writeCallback_static(stream: [*c]soundio.SoundIoOutStream, frame_count_min: c_int, frame_count_max: c_int) callconv(.C) void {
@@ -136,7 +147,7 @@ pub const Output = struct {
     }
 
     pub fn writeCallback(this: *@This(), stream: [*c]soundio.SoundIoOutStream, frame_count_min: usize, frame_count_max: usize) callconv(.C) void {
-        // std.log.info("writeCallback: mutex{*}", .{this.mutex});
+        //std.log.info("writeCallback: mutex{*}", .{this.mutex});
         _ = frame_count_min;
 
         var frames_completed: usize = 0;
@@ -192,7 +203,7 @@ pub const Output = struct {
                     }
                 }
 
-                std.log.info("buffer@r: {d}", .{this.buffer.len()});
+                // std.log.info("buffer@r: {d}", .{this.buffer.len()});
             }
 
             if (soundio.soundio_outstream_end_write(stream) != soundio.SoundIoErrorNone) {
@@ -222,7 +233,7 @@ pub const Output = struct {
     pub fn process(self: *anyopaque, io: proc.IOHead) error{OutOfMemory}!void {
         var this: *@This() = @ptrCast(@alignCast(self));
         // pub fn process(this: *@This(), io: proc.IOHead) error{OutOfMemory}!usize {
-        //std.log.info("process: mutex{*}", .{this.mutex});
+        // std.log.info("process: mutex{*}", .{this.mutex});
 
         {
             this.mutex.lock();
@@ -245,22 +256,47 @@ pub const Output = struct {
                 }
             }
 
-            std.log.info("buffer@w: {d}", .{this.buffer.len()});
+            // std.log.info("buffer@w: {d}", .{this.buffer.len()});
         }
 
         // soundio.soundio_flush_events(this.soundio);
     }
+};
 
-    const vtable = proc.Processor.VTable{
-        .writeSpec = writeSpec,
-        .process = process,
-        .leadFrames = leadFrames,
+const ProcessorImpl = Output;
+
+const VTable = proc.Processor.VTable{
+    .writeSpec = ProcessorImpl.writeSpec,
+    .process = ProcessorImpl.process,
+    .leadFrames = ProcessorImpl.leadFrames,
+};
+
+fn new(_: ?*anyopaque, allocator: std.mem.Allocator) proc.Error!proc.Processor {
+    const inner = try allocator.create(ProcessorImpl);
+    const mutex = try allocator.create(std.Thread.Mutex);
+    mutex.* = std.Thread.Mutex{};
+    try inner.init(OutputInit{
+        .allocator = allocator,
+        .sampling_rate = 44100,
+        .mutex = mutex,
+    });
+
+    return proc.Processor{
+        ._this = inner,
+        ._funcs = &VTable,
     };
+}
 
-    pub fn asProcessor(self: *@This()) proc.Processor {
-        return proc.Processor{
-            ._this = self,
-            ._funcs = &vtable,
-        };
-    }
+fn del(_: ?*anyopaque, p: proc.Processor) void {
+    const inner: *ProcessorImpl = @ptrCast(@alignCast(p._this));
+    const allocator = inner.allocator;
+    inner.deinit();
+    allocator.destroy(inner.mutex);
+    allocator.destroy(inner);
+}
+
+pub const Factory = proc.ProcessorFactory{
+    ._this = null,
+    ._new = new,
+    ._del = del,
 };
