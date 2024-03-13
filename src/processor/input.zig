@@ -5,24 +5,24 @@ const soundio = @cImport({
 });
 
 var rand = std.rand.DefaultPrng.init(0);
-const OutputInit = struct {
+const InputInit = struct {
     allocator: std.mem.Allocator,
     sampling_rate: usize,
     mutex: *std.Thread.Mutex,
 };
 
-const Output = struct {
+const Input = struct {
     allocator: std.mem.Allocator,
     mutex: *std.Thread.Mutex,
     soundio: [*c]soundio.SoundIo,
     device: [*c]soundio.SoundIoDevice,
-    stream: [*c]soundio.SoundIoOutStream,
+    stream: [*c]soundio.SoundIoInStream,
 
     buffer: std.RingBuffer,
 
-    pub fn init(this: *@This(), init_data: OutputInit) !void {
+    pub fn init(this: *@This(), init_data: InputInit) !void {
         var allocator = init_data.allocator;
-        const buffer_size = init_data.sampling_rate * @sizeOf(f32) * 2;
+        const buffer_size = init_data.sampling_rate * @sizeOf(f32);
 
         this.allocator = allocator;
         // this.soundio = sio;
@@ -45,34 +45,34 @@ const Output = struct {
 
         soundio.soundio_flush_events(this.soundio);
 
-        const default_out_idx = soundio.soundio_default_output_device_index(this.soundio);
-        if (default_out_idx < 0) {
-            std.log.warn("no output device found", .{});
+        const default_in_idx = soundio.soundio_default_input_device_index(this.soundio);
+        if (default_in_idx < 0) {
+            std.log.warn("no input device found", .{});
             return error.OutOfMemory;
         }
 
-        const device = soundio.soundio_get_output_device(this.soundio, default_out_idx);
+        const device = soundio.soundio_get_input_device(this.soundio, default_in_idx);
         if (device == null) {
-            std.log.warn("unable to get output device", .{});
+            std.log.warn("unable to get input device", .{});
             return error.OutOfMemory;
         }
         this.device = device;
 
-        const out_stream = soundio.soundio_outstream_create(this.device);
-        if (out_stream == null) {
-            std.log.warn("unable to create output stream", .{});
+        const stream = soundio.soundio_instream_create(this.device);
+        if (stream == null) {
+            std.log.warn("unable to create input stream", .{});
             return error.OutOfMemory;
         }
-        this.stream = out_stream;
-        out_stream.*.sample_rate = @intCast(init_data.sampling_rate);
-        out_stream.*.name = "io-out";
-        out_stream.*.format = soundio.SoundIoFormatFloat32NE;
-        out_stream.*.layout = .{
+        this.stream = stream;
+        stream.*.sample_rate = @intCast(init_data.sampling_rate);
+        stream.*.name = "io-in";
+        stream.*.format = soundio.SoundIoFormatFloat32NE;
+        stream.*.layout = .{
             .name = null,
-            .channel_count = 2,
+            .channel_count = 1,
             .channels = [_]soundio.SoundIoChannelId{
-                soundio.SoundIoChannelIdFrontLeft,
-                soundio.SoundIoChannelIdFrontRight,
+                soundio.SoundIoChannelIdFrontCenter,
+                soundio.SoundIoChannelIdInvalid,
                 soundio.SoundIoChannelIdInvalid,
                 soundio.SoundIoChannelIdInvalid,
                 soundio.SoundIoChannelIdInvalid,
@@ -98,23 +98,23 @@ const Output = struct {
             },
         };
 
-        out_stream.*.write_callback = writeCallback_static;
+        stream.*.read_callback = readCallback_static;
         this.stream.*.userdata = this;
 
-        if (soundio.soundio_outstream_open(this.stream) != soundio.SoundIoErrorNone) {
-            std.log.warn("unable to open output stream", .{});
+        if (soundio.soundio_instream_open(this.stream) != soundio.SoundIoErrorNone) {
+            std.log.warn("unable to open input stream", .{});
             return error.OutOfMemory;
         }
 
-        if (soundio.soundio_outstream_start(this.stream) != soundio.SoundIoErrorNone) {
-            std.log.warn("unable to start output stream", .{});
+        if (soundio.soundio_instream_start(this.stream) != soundio.SoundIoErrorNone) {
+            std.log.warn("unable to start input stream", .{});
             return error.OutOfMemory;
         }
     }
 
     pub fn deinit(this: *@This()) void {
         if (this.stream != null) {
-            soundio.soundio_outstream_destroy(this.stream);
+            soundio.soundio_instream_destroy(this.stream);
         }
         if (this.device != null) {
             soundio.soundio_device_unref(this.device);
@@ -126,17 +126,17 @@ const Output = struct {
         }
     }
 
-    pub fn writeCallback_static(stream: [*c]soundio.SoundIoOutStream, frame_count_min: c_int, frame_count_max: c_int) callconv(.C) void {
-        var this: *Output = @ptrCast(@alignCast(stream.*.userdata));
-        return this.writeCallback(
+    pub fn readCallback_static(stream: [*c]soundio.SoundIoInStream, frame_count_min: c_int, frame_count_max: c_int) callconv(.C) void {
+        var this: *Input = @ptrCast(@alignCast(stream.*.userdata));
+        return this.readCallback(
             stream,
             @intCast(frame_count_min),
             @intCast(frame_count_max),
         );
     }
 
-    pub fn writeCallback(this: *@This(), stream: [*c]soundio.SoundIoOutStream, frame_count_min: usize, frame_count_max: usize) callconv(.C) void {
-        //std.log.info("writeCallback: mutex{*}", .{this.mutex});
+    pub fn readCallback(this: *@This(), stream: [*c]soundio.SoundIoInStream, frame_count_min: usize, frame_count_max: usize) callconv(.C) void {
+        std.log.info("readCallback: mutex{*}", .{this.mutex});
         _ = frame_count_min;
 
         var frames_completed: usize = 0;
@@ -146,8 +146,8 @@ const Output = struct {
         while (frames_completed < frame_count_max) {
             var frame_count: c_int = @intCast(frame_count_max - frames_completed);
             areas = null;
-            if (soundio.soundio_outstream_begin_write(stream, &areas, &frame_count) != soundio.SoundIoErrorNone) {
-                std.log.warn("unable to begin write", .{});
+            if (soundio.soundio_instream_begin_read(stream, &areas, &frame_count) != soundio.SoundIoErrorNone) {
+                std.log.warn("unable to begin read", .{});
                 break;
             }
 
@@ -171,32 +171,28 @@ const Output = struct {
                     @panic("buffer length is not aligned correctly");
                 }
 
-                if (length < @sizeOf(f32) * 2 * frame_count) {
-                    std.log.warn("output: buffer length is too short", .{});
-                }
-
                 for (0..@intCast(frame_count)) |f| {
                     for (0..channels) |c| {
-                        var value: f32 = undefined;
-                        if (buffer.len() >= @sizeOf(f32)) {
-                            var value_bytes: []u8 = std.mem.asBytes(&value);
-                            for (0..@sizeOf(f32)) |i| {
-                                value_bytes[i] = buffer.read().?;
-                            }
-                        } else {
-                            value = 2.0 * rand.random().float(f32) - 0.5;
-                        }
                         const ptr = areas[c].ptr + f * @as(usize, @intCast(areas[c].step));
                         const ptrAlign: [*c]align(4) u8 = @alignCast(ptr);
-                        @as(*f32, @ptrCast(ptrAlign)).* = value;
+                        var value: f32 = @as(*f32, @ptrCast(ptrAlign)).*;
+
+                        var value_bytes: []u8 = std.mem.asBytes(&value);
+                        for (0..@sizeOf(f32)) |i| {
+                            if (!buffer.isFull()) {
+                                buffer.write(value_bytes[i]) catch {
+                                    std.log.warn("unable to write to buffer", .{});
+                                };
+                            }
+                        }
                     }
                 }
 
-                std.log.info("out-buffer@r: {d}", .{this.buffer.len()});
+                std.log.info("in-buffer@w: {d}", .{this.buffer.len()});
             }
 
-            if (soundio.soundio_outstream_end_write(stream) != soundio.SoundIoErrorNone) {
-                std.log.warn("unable to end write", .{});
+            if (soundio.soundio_instream_end_read(stream) != soundio.SoundIoErrorNone) {
+                std.log.warn("unable to end read", .{});
                 break;
             }
 
@@ -206,10 +202,9 @@ const Output = struct {
 
     pub fn writeSpec(this: *@This(), spec: *proc.ConnectionSpec) void {
         _ = this;
-        const id = "Output";
+        const id = "Input";
         @memcpy(spec.*.id[0..id.len], id);
-        spec.*.in_ports[0].type = proc.IODataType.audio;
-        spec.*.in_ports[1].type = proc.IODataType.audio;
+        spec.*.out_ports[0].type = proc.IODataType.audio;
     }
 
     pub fn leadFrames(this: *@This()) usize {
@@ -231,26 +226,36 @@ const Output = struct {
                 @panic("buffer length is not aligned correctly");
             }
 
+            var zero_fill: usize = 0;
+            if (length / @sizeOf(f32) < proc.SignalSliceLength) {
+                zero_fill = @max(0, proc.SignalSliceLength - length / @sizeOf(f32));
+            }
+
+            if (zero_fill > 0) {
+                std.log.warn("input: buffer length is too short zero-filling {d}", .{zero_fill});
+            }
+
             for (0..proc.SignalSliceLength) |i| {
-                for (0..2) |c| {
-                    var value = io.inputs.port_signals[c][i];
-                    var value_bytes = std.mem.asBytes(&value);
-                    for (0..@sizeOf(f32)) |j| {
-                        this.buffer.write(value_bytes[j]) catch {
-                            return error.OutOfMemory;
-                        };
+                for (0..1) |c| {
+                    if (i < zero_fill) {
+                        io.outputs.port_signals[c][i] = 0.0;
+                    } else {
+                        var value_bytes = std.mem.asBytes(&io.outputs.port_signals[c][i]);
+                        for (0..@sizeOf(f32)) |j| {
+                            value_bytes[j] = this.buffer.read().?;
+                        }
                     }
                 }
             }
 
-            std.log.info("out-buffer@w: {d}", .{this.buffer.len()});
+            std.log.info("in-buffer@r: {d}", .{this.buffer.len()});
         }
 
         // soundio.soundio_flush_events(this.soundio);
     }
 };
 
-const ProcessorImpl = Output;
+const ProcessorImpl = Input;
 
 const VTable = proc.Processor.VTable{
     .writeSpec = @ptrCast(&ProcessorImpl.writeSpec),
@@ -262,7 +267,7 @@ fn new(_: *proc.ProcessorFactory, allocator: std.mem.Allocator) proc.Error!proc.
     const inner = try allocator.create(ProcessorImpl);
     const mutex = try allocator.create(std.Thread.Mutex);
     mutex.* = std.Thread.Mutex{};
-    try inner.init(OutputInit{
+    try inner.init(InputInit{
         .allocator = allocator,
         .sampling_rate = 44100,
         .mutex = mutex,

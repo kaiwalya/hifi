@@ -44,6 +44,7 @@ const fftw = @cImport({
 });
 
 const proc = @import("processor/processor.zig");
+const input = @import("processor/input.zig");
 const mergeAndSplit = @import("processor/mergeAndSplit.zig");
 const output = @import("processor/output.zig");
 const sweep = @import("processor/sweep.zig");
@@ -569,67 +570,68 @@ pub fn init_soundio() !struct {
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     var allocator = gpa.allocator();
-    char_ramp = try Ramp.init(allocator, _char_ramp);
+    //char_ramp = try Ramp.init(allocator, _char_ramp);
     // try scan_args(allocator);
 
-    for (0..9) |i| {
-        std.log.info("{d}", .{i * 3 % 8});
-    }
+    // for (0..9) |i| {
+    //     std.log.info("{d}", .{i * 3 % 8});
+    // }
 
     // const context = zmq.zmq_ctx_new();
     // std.log.info("context: {any}", .{context});
 
-    const sio = try init_soundio();
-    const s = sio.s;
-    defer sio.deinit(s);
+    // const sio = try init_soundio();
+    // const s = sio.s;
+    // defer sio.deinit(s);
 
-    //default input device
-    const default_input_device_idx = soundio.soundio_default_input_device_index(s);
-    const default_output_device_idx = soundio.soundio_default_output_device_index(s);
+    // //default input device
+    // const default_input_device_idx = soundio.soundio_default_input_device_index(s);
+    // const default_output_device_idx = soundio.soundio_default_output_device_index(s);
 
-    //make sure we have both device indexes
-    if (default_input_device_idx < 0 or default_output_device_idx < 0) {
-        std.log.warn("no input or output device", .{});
-        return;
-    }
+    // //make sure we have both device indexes
+    // if (default_input_device_idx < 0 or default_output_device_idx < 0) {
+    //     std.log.warn("no input or output device", .{});
+    //     return;
+    // }
 
-    //open input
-    const input_device = soundio.soundio_get_input_device(s, default_input_device_idx);
-    if (input_device == null) {
-        std.log.warn("soundio_get_input_device failed: {d}", .{default_input_device_idx});
-        return;
-    }
-    defer soundio.soundio_device_unref(input_device);
+    // //open input
+    // const input_device = soundio.soundio_get_input_device(s, default_input_device_idx);
+    // if (input_device == null) {
+    //     std.log.warn("soundio_get_input_device failed: {d}", .{default_input_device_idx});
+    //     return;
+    // }
+    // defer soundio.soundio_device_unref(input_device);
 
-    print_device(input_device);
+    // print_device(input_device);
 
-    //open input stream
-    const input_stream = soundio.soundio_instream_create(input_device);
-    if (input_stream == null) {
-        std.log.warn("soundio_instream_create failed", .{});
-        return;
-    }
-    defer soundio.soundio_instream_destroy(input_stream);
+    // //open input stream
+    // const input_stream = soundio.soundio_instream_create(input_device);
+    // if (input_stream == null) {
+    //     std.log.warn("soundio_instream_create failed", .{});
+    //     return;
+    // }
+    // defer soundio.soundio_instream_destroy(input_stream);
 
-    input_stream.*.read_callback = read_callback;
-    input_stream.*.format = soundio.SoundIoFormatFloat32LE;
-    input_stream.*.sample_rate = input_device.*.sample_rate_current;
-    input_stream.*.layout = input_device.*.current_layout;
-    var loop = TapeLoop.init(
-        allocator,
-        @intCast(input_device.*.current_layout.channel_count),
-        @intCast(input_device.*.sample_rate_current),
-    );
-    defer loop.deinit();
-    var stream_data = StreamData{
-        .allocator = allocator,
-        .tape = &loop,
-    };
-    input_stream.*.userdata = @ptrCast(&stream_data);
+    // input_stream.*.read_callback = read_callback;
+    // input_stream.*.format = soundio.SoundIoFormatFloat32LE;
+    // input_stream.*.sample_rate = input_device.*.sample_rate_current;
+    // input_stream.*.layout = input_device.*.current_layout;
+    // var loop = TapeLoop.init(
+    //     allocator,
+    //     @intCast(input_device.*.current_layout.channel_count),
+    //     @intCast(input_device.*.sample_rate_current),
+    // );
+    // defer loop.deinit();
+    // var stream_data = StreamData{
+    //     .allocator = allocator,
+    //     .tape = &loop,
+    // };
+    // input_stream.*.userdata = @ptrCast(&stream_data);
     var factories = [_]proc.ProcessorFactory{
         try sweep.initFactory(),
         try mergeAndSplit.initFactory(),
         try output.initFactory(),
+        try input.initFactory(),
     };
     defer {
         for (&factories) |*f| {
@@ -649,8 +651,9 @@ pub fn main() !void {
     }
 
     const out_head = try proc.IOHead.init(allocator, 2, 0);
-    const split_head = try proc.IOHead.init(allocator, 1, 2);
+    const split_head = try proc.IOHead.init(allocator, 2, 2);
     const swp_head = try proc.IOHead.init(allocator, 1, 1);
+    const in_head = try proc.IOHead.init(allocator, 0, 1);
 
     const sampling_rate = 44100;
 
@@ -658,7 +661,7 @@ pub fn main() !void {
     var frames_idx_increment: proc.SignalSlice = @splat(proc.SignalSliceLength);
     const t_per_frame: proc.SignalSlice = @splat(1.0 / @as(f32, @floatFromInt(sampling_rate)));
 
-    var slices = [_]proc.SignalSlice{ @splat(0.0), @splat(0.0), @splat(0.0) };
+    var slices = [_]proc.SignalSlice{ @splat(0.0), @splat(0.0), @splat(0.0), @splat(0.0) };
 
     swp_head.inputs.port_signals[0] = &slices[0];
     swp_head.outputs.port_signals[0] = &slices[1];
@@ -670,31 +673,43 @@ pub fn main() !void {
     out_head.inputs.port_signals[0] = &slices[0];
     out_head.inputs.port_signals[1] = &slices[2];
 
+    in_head.outputs.port_signals[0] = &slices[3];
+    split_head.inputs.port_signals[1] = &slices[3];
+
     // var procs = [_]proc.Processor{ swp_proc, split_proc, o_proc };
-    var heads = [_]proc.IOHead{ swp_head, split_head, out_head };
-    var lead_frames: usize = procs[procs.len - 1].leadFrames();
-    var lead_frames_target: usize = 1;
+    var heads = [_]proc.IOHead{ swp_head, split_head, out_head, in_head };
+    var lag_frames_idx = procs.len - 1;
+    var lead_frames_idx = procs.len - 2;
+    var lead_frames: usize = procs[lead_frames_idx].leadFrames();
+    var lag_frames: usize = procs[lag_frames_idx].leadFrames();
+    var lead_frames_target: usize = sampling_rate / 10;
 
     while (true) {
         const generate = lead_frames < lead_frames_target;
+        const consume = lag_frames > 0;
 
-        if (generate) {
+        _ = generate;
+
+        if (consume) {
             slices[0] = frames_idx * t_per_frame;
             for (0..procs.len) |i| {
                 try procs[i].process(heads[i]);
             }
             frames_idx += frames_idx_increment;
         } else {
-            const lead_frames_extra = lead_frames - lead_frames_target;
-            const seconds_extra = @as(f32, @floatFromInt(lead_frames_extra)) / @as(f32, @floatFromInt(sampling_rate));
-            std.time.sleep(@intFromFloat(@round(seconds_extra * std.time.ns_per_s)));
+            // const lead_frames_extra = lead_frames - lead_frames_target;
+            // const seconds_extra = @as(f32, @floatFromInt(lead_frames_extra)) / @as(f32, @floatFromInt(sampling_rate));
+            // std.time.sleep(@intFromFloat(@round(seconds_extra * std.time.ns_per_s)));
+            std.time.sleep(@intFromFloat(@round(100.0 * std.time.ns_per_ms)));
         }
 
-        lead_frames = procs[procs.len - 1].leadFrames();
-        if (lead_frames == 0) {
-            lead_frames_target *= 2;
-            std.log.info("lead_frames_target: {d}", .{lead_frames_target});
-        }
+        lead_frames = procs[lead_frames_idx].leadFrames();
+        lag_frames = procs[lag_frames_idx].leadFrames();
+        // if (lead_frames == 0) {
+        //     lead_frames_target *= 1;
+        //     lead_frames_target = @min(lead_frames_target * 2, sampling_rate);
+        //     std.log.info("lead_frames_target: {d}", .{lead_frames_target});
+        // }
     }
 }
 

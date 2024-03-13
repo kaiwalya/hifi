@@ -48,9 +48,11 @@ const Sweep = struct {
         const ng_disp_rot = this.min_f * frames_t + (this.max_f - this.min_f) * frames_t * frames_t / this.max_time * this.c_half;
         const ng_disp_radians = ng_disp_rot * two_pi;
 
+        const amplitude: proc.SignalSlice = @splat(1.0);
+
         //when acc != 1
         // const ng_v = min_freq + std.math.pow(f32, tt / max_time, slow_down) * (max_freq - min_freq); //rotations per second
-        out.* = @sin(ng_disp_radians);
+        out.* = @sin(ng_disp_radians) * amplitude;
     }
 };
 
