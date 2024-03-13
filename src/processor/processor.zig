@@ -42,32 +42,39 @@ pub const Processor = struct {
         leadFrames: ?*const fn (this: *anyopaque) usize,
     };
 
-    _this: *anyopaque,
-    _funcs: *const VTable,
+    _processorImpl: *anyopaque,
+    _processorVTable: *const VTable,
 
     pub fn writeSpec(this: *@This(), spec: *ConnectionSpec) void {
-        const writeSpec_fn = this._funcs.writeSpec;
-        writeSpec_fn(this._this, spec);
+        const writeSpec_fn = this._processorVTable.writeSpec;
+        writeSpec_fn(this._processorImpl, spec);
     }
 
     pub fn process(this: *@This(), head: IOHead) !void {
-        const process_fn = this._funcs.process;
-        return process_fn(this._this, head);
+        const process_fn = this._processorVTable.process;
+        return process_fn(this._processorImpl, head);
     }
 
     pub fn leadFrames(this: *@This()) usize {
-        const leadFrames_fn = this._funcs.leadFrames;
+        const leadFrames_fn = this._processorVTable.leadFrames;
         if (leadFrames_fn == null) {
             return 0;
         }
-        return leadFrames_fn.?(this._this);
+        return leadFrames_fn.?(this._processorImpl);
     }
 };
 
 pub const ProcessorFactory = struct {
+    _deinitFactory: ?*const fn (this: *ProcessorFactory) void,
     _this: ?*anyopaque,
     _new: *const fn (this: ?*anyopaque, allocator: std.mem.Allocator) Error!Processor,
     _del: *const fn (this: ?*anyopaque, processor: Processor) void,
+
+    pub fn deinitFactory(this: *@This()) void {
+        if (this._deinitFactory != null) {
+            this._deinitFactory.?(this);
+        }
+    }
 
     pub fn new(this: *const @This(), allocator: std.mem.Allocator) Error!Processor {
         return this._new(this._this, allocator);

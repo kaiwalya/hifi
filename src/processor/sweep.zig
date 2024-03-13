@@ -73,20 +73,22 @@ fn new(_: ?*anyopaque, allocator: std.mem.Allocator) proc.Error!proc.Processor {
     });
 
     return proc.Processor{
-        ._this = inner,
-        ._funcs = &VTable,
+        ._processorImpl = inner,
+        ._processorVTable = &VTable,
     };
 }
 
 fn del(_: ?*anyopaque, p: proc.Processor) void {
-    const inner: *ProcessorImpl = @ptrCast(@alignCast(p._this));
+    const inner: *ProcessorImpl = @ptrCast(@alignCast(p._processorImpl));
     const allocator = inner.opt.allocator;
     inner.deinit();
     allocator.destroy(inner);
 }
 
-pub const Factory = proc.ProcessorFactory{
-    ._this = null,
-    ._new = new,
-    ._del = del,
-};
+pub fn initFactory(f: *proc.ProcessorFactory) proc.Error!void {
+    f._deinitFactory = null;
+
+    f._this = null;
+    f._new = new;
+    f._del = del;
+}

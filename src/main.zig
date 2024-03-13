@@ -627,14 +627,28 @@ pub fn main() !void {
     };
     input_stream.*.userdata = @ptrCast(&stream_data);
 
-    var o_proc = try output.Factory.new(allocator);
-    defer output.Factory.del(o_proc);
+    var factories = try allocator.alloc(proc.ProcessorFactory, 3);
 
-    var swp_proc = try sweep.Factory.new(allocator);
-    defer sweep.Factory.del(swp_proc);
+    try sweep.initFactory(&factories[0]);
+    try mergeAndSplit.initFactory(&factories[1]);
+    try output.initFactory(&factories[2]);
+    defer {
+        for (factories) |*f| {
+            f.deinitFactory();
+        }
+        allocator.free(factories);
+    }
 
-    var split_proc = try mergeAndSplit.Factory.new(allocator);
-    defer mergeAndSplit.Factory.del(split_proc);
+    const procs = try allocator.alloc(proc.Processor, factories.len);
+    for (0..factories.len) |i| {
+        procs[i] = try factories[i].new(allocator);
+    }
+    defer {
+        for (0..procs.len) |i| {
+            factories[i].del(procs[i]);
+        }
+        allocator.free(procs);
+    }
 
     const out_head = try proc.IOHead.init(allocator, 2, 0);
     const split_head = try proc.IOHead.init(allocator, 1, 2);
@@ -658,7 +672,7 @@ pub fn main() !void {
     out_head.inputs.port_signals[0] = &slices[0];
     out_head.inputs.port_signals[1] = &slices[2];
 
-    var procs = [_]proc.Processor{ swp_proc, split_proc, o_proc };
+    // var procs = [_]proc.Processor{ swp_proc, split_proc, o_proc };
     var heads = [_]proc.IOHead{ swp_head, split_head, out_head };
     var lead_frames: usize = procs[procs.len - 1].leadFrames();
     var lead_frames_target: usize = 1;

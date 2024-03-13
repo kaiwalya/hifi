@@ -20,17 +20,6 @@ pub const Output = struct {
 
     buffer: std.RingBuffer,
 
-    pub fn serialize(this: *@This()) ![]u8 {
-        const config = .{
-            .sampling_rate = this.stream.*.sample_rate,
-        };
-
-        var str = std.ArrayList(u8).init(this.allocator);
-        try std.json.stringify(config, .{}, str.writer());
-        std.log.info("{s}", .{str.items});
-        return try str.toOwnedSlice();
-    }
-
     pub fn init(this: *@This(), init_data: OutputInit) !void {
         var allocator = init_data.allocator;
         const buffer_size = init_data.sampling_rate * @sizeOf(f32) * 2;
@@ -282,21 +271,23 @@ fn new(_: ?*anyopaque, allocator: std.mem.Allocator) proc.Error!proc.Processor {
     });
 
     return proc.Processor{
-        ._this = inner,
-        ._funcs = &VTable,
+        ._processorImpl = inner,
+        ._processorVTable = &VTable,
     };
 }
 
 fn del(_: ?*anyopaque, p: proc.Processor) void {
-    const inner: *ProcessorImpl = @ptrCast(@alignCast(p._this));
+    const inner: *ProcessorImpl = @ptrCast(@alignCast(p._processorImpl));
     const allocator = inner.allocator;
     inner.deinit();
     allocator.destroy(inner.mutex);
     allocator.destroy(inner);
 }
 
-pub const Factory = proc.ProcessorFactory{
-    ._this = null,
-    ._new = new,
-    ._del = del,
-};
+pub fn initFactory(f: *proc.ProcessorFactory) proc.Error!void {
+    f._deinitFactory = null;
+
+    f._this = null;
+    f._new = new;
+    f._del = del;
+}
