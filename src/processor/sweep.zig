@@ -30,16 +30,15 @@ const Sweep = struct {
 
     pub fn deinit(_: @This()) void {}
 
-    pub fn writeSpec(self: *const anyopaque, spec: *proc.ConnectionSpec) void {
-        _ = self;
+    pub fn writeSpec(this: *@This(), spec: *proc.ConnectionSpec) void {
+        _ = this;
         const id = "Sweep";
         @memcpy(spec.*.id[0..id.len], id);
         spec.*.in_ports[0].type = proc.IODataType.clock;
         spec.*.out_ports[0].type = proc.IODataType.audio;
     }
 
-    pub fn process(self: *anyopaque, io: proc.IOHead) !void {
-        const this: *@This() = @ptrCast(@alignCast(self));
+    pub fn process(this: *@This(), io: proc.IOHead) !void {
         const frames_t_raw: *proc.SignalSlice = io.inputs.port_signals[0];
         const frames_t = @mod(frames_t_raw.*, this.max_time);
         var out: *proc.SignalSlice = io.outputs.port_signals[0];
@@ -58,12 +57,12 @@ const Sweep = struct {
 const ProcessorImpl = Sweep;
 
 const VTable = proc.Processor.VTable{
-    .writeSpec = ProcessorImpl.writeSpec,
-    .process = ProcessorImpl.process,
+    .writeSpec = @ptrCast(&ProcessorImpl.writeSpec),
+    .process = @ptrCast(&ProcessorImpl.process),
     .leadFrames = null,
 };
 
-fn new(_: ?*anyopaque, allocator: std.mem.Allocator) proc.Error!proc.Processor {
+fn new(_: *proc.ProcessorFactory, allocator: std.mem.Allocator) proc.Error!proc.Processor {
     const inner = try allocator.create(ProcessorImpl);
     inner.init(SweepInit{
         .allocator = allocator,
@@ -78,17 +77,21 @@ fn new(_: ?*anyopaque, allocator: std.mem.Allocator) proc.Error!proc.Processor {
     };
 }
 
-fn del(_: ?*anyopaque, p: proc.Processor) void {
+fn del(_: *proc.ProcessorFactory, p: proc.Processor) void {
     const inner: *ProcessorImpl = @ptrCast(@alignCast(p._processorImpl));
     const allocator = inner.opt.allocator;
     inner.deinit();
     allocator.destroy(inner);
 }
 
-pub fn initFactory(f: *proc.ProcessorFactory) proc.Error!void {
-    f._deinitFactory = null;
+pub fn initFactory() proc.Error!proc.ProcessorFactory {
+    const FactoryVTable = proc.ProcessorFactory.VTable{
+        .newProcessor = @ptrCast(&new),
+        .deleteProcessor = @ptrCast(&del),
+    };
 
-    f._this = null;
-    f._new = new;
-    f._del = del;
+    return proc.ProcessorFactory{
+        ._factoryImpl = null,
+        ._factoryVTable = &FactoryVTable,
+    };
 }

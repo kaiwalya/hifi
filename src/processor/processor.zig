@@ -37,7 +37,7 @@ pub const ConnectionSpec = struct {
 
 pub const Processor = struct {
     pub const VTable = struct {
-        writeSpec: *const fn (this: *const anyopaque, spec: *ConnectionSpec) void,
+        writeSpec: *const fn (this: *anyopaque, spec: *ConnectionSpec) void,
         process: *const fn (this: *anyopaque, head: IOHead) anyerror!void,
         leadFrames: ?*const fn (this: *anyopaque) usize,
     };
@@ -64,24 +64,33 @@ pub const Processor = struct {
     }
 };
 
+pub fn _no_op_deinitFactory(this: *ProcessorFactory) void {
+    _ = this;
+}
+
 pub const ProcessorFactory = struct {
-    _deinitFactory: ?*const fn (this: *ProcessorFactory) void,
-    _this: ?*anyopaque,
-    _new: *const fn (this: ?*anyopaque, allocator: std.mem.Allocator) Error!Processor,
-    _del: *const fn (this: ?*anyopaque, processor: Processor) void,
+    pub const VTable = struct {
+        newProcessor: *const fn (f: *ProcessorFactory, allocator: std.mem.Allocator) Error!Processor,
+        deleteProcessor: *const fn (f: *ProcessorFactory, p: Processor) void,
+        deinitFactory: *const fn (f: *ProcessorFactory) void = _no_op_deinitFactory,
+    };
+
+    _factoryImpl: ?*anyopaque,
+    _factoryVTable: *const VTable,
 
     pub fn deinitFactory(this: *@This()) void {
-        if (this._deinitFactory != null) {
-            this._deinitFactory.?(this);
-        }
+        const deinitFactory_fn = this._factoryVTable.deinitFactory;
+        deinitFactory_fn(this);
     }
 
-    pub fn new(this: *const @This(), allocator: std.mem.Allocator) Error!Processor {
-        return this._new(this._this, allocator);
+    pub fn newProcessor(this: *@This(), allocator: std.mem.Allocator) Error!Processor {
+        const newProcessor_fn = this._factoryVTable.newProcessor;
+        return newProcessor_fn(this, allocator);
     }
 
-    pub fn del(this: *const @This(), processor: Processor) void {
-        this._del(this._this, processor);
+    pub fn deleteProcessor(this: *@This(), p: Processor) void {
+        const deleteProcessor_fn = this._factoryVTable.deleteProcessor;
+        deleteProcessor_fn(this, p);
     }
 };
 

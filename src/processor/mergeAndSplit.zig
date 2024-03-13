@@ -11,8 +11,8 @@ const MergeAndSplit = struct {
 
     pub fn deinit(_: @This()) void {}
 
-    pub fn writeSpec(self: *const anyopaque, spec: *proc.ConnectionSpec) void {
-        _ = self;
+    pub fn writeSpec(this: *@This(), spec: *proc.ConnectionSpec) void {
+        _ = this;
         @memcpy(spec.*.id[0.."merge".len], "merge");
         for (&spec.*.in_ports) |*port| {
             port.type = proc.IODataType.audio;
@@ -23,8 +23,8 @@ const MergeAndSplit = struct {
         }
     }
 
-    pub fn process(self: *anyopaque, io: proc.IOHead) !void {
-        _ = self;
+    pub fn process(this: *@This(), io: proc.IOHead) !void {
+        _ = this;
         const outputs = io.outputs;
         var last_output_slice: ?*proc.SignalSlice = null;
         for (outputs.port_signals) |outputSignal| {
@@ -46,12 +46,12 @@ const MergeAndSplit = struct {
 const ProcessorImpl = MergeAndSplit;
 
 const VTable = proc.Processor.VTable{
-    .writeSpec = ProcessorImpl.writeSpec,
-    .process = ProcessorImpl.process,
+    .writeSpec = @ptrCast(&ProcessorImpl.writeSpec),
+    .process = @ptrCast(&ProcessorImpl.process),
     .leadFrames = null,
 };
 
-fn new(_: ?*anyopaque, allocator: std.mem.Allocator) proc.Error!proc.Processor {
+fn new(_: *proc.ProcessorFactory, allocator: std.mem.Allocator) proc.Error!proc.Processor {
     const inner = try allocator.create(ProcessorImpl);
     inner.init(allocator);
 
@@ -61,19 +61,23 @@ fn new(_: ?*anyopaque, allocator: std.mem.Allocator) proc.Error!proc.Processor {
     };
 }
 
-fn del(_: ?*anyopaque, p: proc.Processor) void {
+fn del(_: *proc.ProcessorFactory, p: proc.Processor) void {
     const inner: *ProcessorImpl = @ptrCast(@alignCast(p._processorImpl));
     const allocator = inner.allocator;
     inner.deinit();
     allocator.destroy(inner);
 }
 
-pub fn initFactory(f: *proc.ProcessorFactory) proc.Error!void {
-    f._deinitFactory = null;
+pub fn initFactory() proc.Error!proc.ProcessorFactory {
+    const FactoryVTable = proc.ProcessorFactory.VTable{
+        .newProcessor = @ptrCast(&new),
+        .deleteProcessor = @ptrCast(&del),
+    };
 
-    f._this = null;
-    f._new = new;
-    f._del = del;
+    return proc.ProcessorFactory{
+        ._factoryImpl = null,
+        ._factoryVTable = &FactoryVTable,
+    };
 }
 
 test "merge passes the right id" {

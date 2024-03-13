@@ -626,26 +626,24 @@ pub fn main() !void {
         .tape = &loop,
     };
     input_stream.*.userdata = @ptrCast(&stream_data);
-
-    var factories = try allocator.alloc(proc.ProcessorFactory, 3);
-
-    try sweep.initFactory(&factories[0]);
-    try mergeAndSplit.initFactory(&factories[1]);
-    try output.initFactory(&factories[2]);
+    var factories = [_]proc.ProcessorFactory{
+        try sweep.initFactory(),
+        try mergeAndSplit.initFactory(),
+        try output.initFactory(),
+    };
     defer {
-        for (factories) |*f| {
+        for (&factories) |*f| {
             f.deinitFactory();
         }
-        allocator.free(factories);
     }
 
     const procs = try allocator.alloc(proc.Processor, factories.len);
     for (0..factories.len) |i| {
-        procs[i] = try factories[i].new(allocator);
+        procs[i] = try factories[i].newProcessor(allocator);
     }
     defer {
         for (0..procs.len) |i| {
-            factories[i].del(procs[i]);
+            factories[i].deleteProcessor(procs[i]);
         }
         allocator.free(procs);
     }
